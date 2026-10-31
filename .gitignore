@@ -1,0 +1,6 @@
+.env
+data/
+public/dashboard.json
+public/traces.jsonl
+public/raw/
+__pycache__/

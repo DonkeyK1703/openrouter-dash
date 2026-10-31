@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Break-even Throughput</title>
+<style>
+:root{--bg:#f7f7f5;--panel:#fff;--ink:#1b1b1a;--mute:#6b6b66;--line:#e6e5e0;--accent:#3b5bdb;--warn:#b35c00;--chip:#efeee9;--mark:#eef2ff}
+@media (prefers-color-scheme:dark){:root{--bg:#121211;--panel:#1b1b1a;--ink:#ecebe6;--mute:#9a9992;--line:#2c2c2a;--accent:#7c95f5;--warn:#ffa94d;--chip:#262624;--mark:#1e2440}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--panel)}
+h1{font-size:17px;margin:0;font-weight:650}
+h2{font-size:15px;margin:0;font-weight:600}
+nav{display:flex;gap:4px}
+nav button{border:0;background:none;color:var(--mute);padding:6px 12px;border-radius:6px;font:inherit;cursor:pointer}
+nav button.on{background:var(--chip);color:var(--ink);font-weight:600}
+main{padding:16px 20px;max-width:1400px;margin:0 auto}
+@media (max-width:700px){main{padding:12px 16px}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;margin-bottom:16px;overflow:hidden}
+.head{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:baseline;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--line)}
+.inputs{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;padding:14px}
+.inputs label{display:block;font-size:12px;color:var(--mute);margin-bottom:4px}
+.inputs input{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 8px;width:100%}
+.inputs .gpu input{border-color:var(--accent);font-weight:600}
+.meta{color:var(--mute);font-size:12px}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+th,td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+th{font-size:12px;color:var(--mute);font-weight:600;background:var(--panel)}
+th.l,td.l{text-align:left}
+tr.ref td{background:var(--mark)}
+tr.tier td{background:var(--chip);font-weight:600;text-align:left;font-size:12px;color:var(--mute);text-transform:uppercase;letter-spacing:.05em}
+.ref-b{display:inline-block;border-radius:4px;padding:1px 7px;font-size:11px;font-weight:600;background:var(--accent);color:#fff}
+.promo{color:var(--warn);font-size:11px;font-weight:600}
+.warn{color:var(--warn);font-weight:600;font-size:12px}
+.sub{color:var(--mute);font-size:12px}
+.be{font-weight:650}
+.empty{padding:28px;text-align:center;color:var(--mute)}
+.more{border:0;background:none;color:var(--accent);font:inherit;font-size:12px;cursor:pointer;padding:0}
+.hbar{height:6px;background:var(--accent);border-radius:3px}
+footer{color:var(--mute);font-size:12px;padding:0 20px 24px;max-width:1400px;margin:0 auto}
+</style>
+</head>
+<body>
+<header><h1>Break-even Throughput</h1><nav id="tabs"><button data-t="be" class="on">Break-even</button><button data-t="apps">Apps</button></nav></header>
+<main id="main"><div class="empty">Loading…</div></main>
+<footer>Source: OpenRouter (openrouter.ai/rankings). Licensed under CC BY 4.0.</footer>
+<script>
+let D=null, tab='be', appSort='popular';
+const OPEN=new Set();  // models whose full standard list is expanded
+const IN={gpu:'',util:70,R:82,h:93,bR:4,bh:0};
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const big=n=>n==null?'–':n>=1e12?(n/1e12).toFixed(2)+'T':n>=1e9?(n/1e9).toFixed(1)+'B':n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(n/1e3).toFixed(0)+'K':String(n);
+const usd=n=>!Number.isFinite(n)?'–':'$'+(n<1?n.toFixed(4):n.toFixed(2));
+const int=n=>!Number.isFinite(n)?'–':Math.round(n).toLocaleString();
+const when=s=>s?new Date(s).toLocaleString([],{dateStyle:'medium',timeStyle:'short'}):'–';
+const nearest=(arr,q)=>arr[Math.max(0,Math.ceil(q*arr.length)-1)];  // nearest-rank percentile
+
+// Formula 1: revenue per 1M output tokens (prices per 1M). No cache price -> cached share billed at input price.
+function revenue(p,R,h){if(p.in==null||p.out==null||R===''||!Number.isFinite(h))return null;return p.out+R*((1-h)*p.in+h*(p.cache??p.in))}
+// Formula 2: break-even output tokens per GPU -> [per hour, per second]
+function breakeven(rev){const g=parseFloat(IN.gpu),u=parseFloat(IN.util);if(!(g>0)||!(u>0)||!rev)return [null,null];const s=(g/(u/100))/(rev/1e6)/3600;return [s*3600,s]}
+
+function row(tier,e,ref,R,h){
+ const rev=revenue(e,R,h),[hr,s]=breakeven(rev),gpu=parseFloat(IN.gpu)>0;
+ const promo=e.discount>0&&e.discount<1?` <span class="promo" title="List price $${(e.in/(1-e.discount)).toFixed(4)} in / $${(e.out/(1-e.discount)).toFixed(4)} out">promo −${Math.round(e.discount*100)}%</span>`:'';
+ return `<tr class="${ref?'ref':''}"><td class="l">${tier}</td><td class="l">${esc(e.provider)}${promo}<div class="sub">${esc(e.tag)}${e.from?` · lab price on ${esc(e.from)}`:''}</div></td><td class="l">${ref?`<span class="ref-b">${ref}</span>`:''}</td><td>${usd(e.in)}</td><td>${usd(e.cache)}</td><td>${usd(e.out)}</td><td>${usd(rev)}</td><td class="be">${gpu?int(hr):'<span class="sub">enter GPU cost</span>'}</td><td class="be">${gpu?int(s):'–'}</td></tr>`;
+}
+
+function section(m){
+ const R=IN.R,h=IN.h===''?NaN:IN.h/100;
+ const ranked=list=>list.map(e=>({...e,_rev:revenue(e,R,h)})).filter(e=>Number.isFinite(e._rev)).sort((a,b)=>a._rev-b._rev);
+ // Standard: no service tier, uptime_last_1d >= 95%, status 0 (proxy for "used in Standard routing")
+ const std=ranked(m.endpoints.filter(e=>!e.tier&&e.status===0&&(e.uptime??0)>=95));
+ const dropped=m.endpoints.filter(e=>!e.tier).length-std.length;
+ const prio=ranked(m.endpoints.filter(e=>e.tier==='priority'||e.tier==='ultrafast'));
+ const flex=ranked(m.endpoints.filter(e=>e.tier==='flex'));
+ const thin=std.length<3,a=m.anchor;
+ const isAnchor=e=>a&&!a.from&&e.provider===a.provider&&e.tag===a.tag;
+ let body=`<tr class="tier"><td colspan="9">Standard · ${std.length} qualifying${dropped?` · ${dropped} excluded (uptime under 95%, not in standard routing, or no price)`:''}</td></tr>`;
+ if(thin){
+  body+=a?row('Standard',a,'Anchor',R,h):`<tr><td colspan="9" class="sub l">No anchor: the lab doesn't serve this model.</td></tr>`;
+ }else{
+  const agg=nearest(std,.25),mkt=nearest(std,.5),all=OPEN.has(m.permaslug);
+  for(const e of std){const ref=[e===agg&&'Aggressive',e===mkt&&'Market',isAnchor(e)&&'Anchor'].filter(Boolean).join(' · ');if(ref||all)body+=row('Standard',e,ref,R,h)}
+  if(a&&!std.some(isAnchor))body+=row('Standard',a,'Anchor',R,h);
+  if(!a)body+=`<tr><td colspan="9" class="sub l">No anchor: the lab doesn't serve this model.</td></tr>`;
+  body+=`<tr><td colspan="9" class="l"><button class="more" data-m="${esc(m.permaslug)}">${all?'Show reference points only':`Show all ${std.length} standard providers`}</button></td></tr>`;
+ }
+ for(const [name,list] of [['Priority',prio],['Flex',flex]]){
+  body+=`<tr class="tier"><td colspan="9">${name}</td></tr>`;
+  if(!list.length){body+=`<tr><td colspan="9" class="sub l">No market</td></tr>`;continue}
+  const med=nearest(list,.5);for(const e of list)body+=row(name,e,e===med?'Median':'',R,h);
+ }
+ body+=`<tr class="tier"><td colspan="9">Batch</td></tr>`;
+ body+=m.batch?row('Batch',{provider:'Batch API',tag:m.batch.id,discount:0,...m.batch},'Catalog price',IN.bR,IN.bh===''?NaN:IN.bh/100):`<tr><td colspan="9" class="sub l">No market (no :batch entry for this slug)</td></tr>`;
+ return `<div class="card"><div class="head"><h2>#${m.rank} ${esc(m.name)} ${thin?'<span class="warn">thin market</span>':''}</h2><span class="meta">${esc(m.permaslug)} · ${big(m.tok7)} tokens / 7d · prices ${when(m.prices_fetched)}</span></div>
+ <div class="scroll"><table><thead><tr><th class="l">Tier</th><th class="l">Provider</th><th class="l">Reference</th><th>Input $/1M</th><th>Cache read $/1M</th><th>Output $/1M</th><th>Revenue / 1M output</th><th>Break-even tok / GPU-hr</th><th>Break-even tok/s / GPU</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
+}
+
+function drawModels(){
+ $('#models').innerHTML=D.models.map(section).join('');
+ document.querySelectorAll('.more').forEach(b=>b.onclick=()=>{const k=b.dataset.m;OPEN.has(k)?OPEN.delete(k):OPEN.add(k);drawModels()});
+}
+
+function renderBE(){
+ const f=(k,l,step)=>`<div class="${k==='gpu'?'gpu':''}"><label for="${k}">${l}</label><input id="${k}" type="number" min="0" step="${step}" value="${IN[k]}"${k==='gpu'?' placeholder="e.g. 2.50"':''}></div>`;
+ $('#main').innerHTML=`<div class="card"><div class="inputs">${f('gpu','GPU cost per hour, per GPU ($)','0.01')}${f('util','Utilization (%)','1')}${f('R','Input tokens per output token','1')}${f('h','Cache hit rate (%)','1')}${f('bR','Batch: input per output token','1')}${f('bh','Batch: cache hit rate (%)','1')}</div>
+ <div class="head" style="border-top:1px solid var(--line);border-bottom:0"><span class="meta">Top ${D.models.length} open-weight models by trailing-7-day tokens · rankings through ${esc(D.rankings_end)} · prices pulled ${when(D.sources.endpoints.fetched)}</span><span class="meta">Revenue = out + ratio × ((1 − hit) × in + hit × cache) · Break-even tok/s = (GPU $/hr ÷ util) ÷ revenue per token ÷ 3600</span></div></div>
+ <div id="models"></div>`;
+ drawModels();
+ document.querySelectorAll('.inputs input').forEach(i=>i.oninput=()=>{IN[i.id]=i.value===''?'':+i.value;drawModels()});
+}
+
+function renderApps(){
+ const a=(D.apps[appSort]||{}).data||[],meta=(D.apps[appSort]||{}).meta||{},max=Math.max(1,...a.map(x=>+x.total_tokens));
+ $('#main').innerHTML=`<div class="card"><div class="head"><span class="meta">${a.length} apps · ${esc(meta.start_date)} → ${esc(meta.end_date)}</span><nav><button data-s="popular">Popular</button><button data-s="trending">Trending</button></nav></div><div class="scroll"><table><thead><tr><th>#</th><th class="l">App</th><th>Tokens</th><th class="l" style="width:30%"></th><th>Requests</th><th>Tokens / request</th></tr></thead><tbody>${a.map(x=>`<tr><td>${x.rank}</td><td class="l">${esc(x.app_name)}</td><td>${big(+x.total_tokens)}</td><td class="l"><div class="hbar" style="width:${(+x.total_tokens/max*100).toFixed(1)}%"></div></td><td>${big(x.total_requests)}</td><td>${big(Math.round(+x.total_tokens/x.total_requests))}</td></tr>`).join('')}</tbody></table></div></div>`;
+ document.querySelectorAll('[data-s]').forEach(b=>{b.classList.toggle('on',b.dataset.s===appSort);b.onclick=()=>{appSort=b.dataset.s;renderApps()}});
+}
+
+const render=()=>(tab==='be'?renderBE:renderApps)();
+document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>{tab=b.dataset.t;document.querySelectorAll('#tabs button').forEach(x=>x.classList.toggle('on',x===b));render()});
+
+async function load(){
+ try{
+  const nd=await (await fetch('dashboard.json',{cache:'no-store'})).json();
+  if(nd.generated_at!==D?.generated_at){const first=!D;D=nd;if(first||document.activeElement?.tagName!=='INPUT')render()}
+ }catch{if(!D)$('#main').innerHTML='<div class="empty">Waiting for the first poll. This page refreshes automatically.</div>'}
+ setTimeout(load,D?300000:15000);
+}
+load();
+</script>
+</body>
+</html>

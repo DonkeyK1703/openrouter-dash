@@ -1,0 +1,33 @@
+name: poll
+on:
+  schedule: [{cron: '*/30 * * * *'}]  # GitHub may start scheduled runs late; app.py allows 5 min slack
+  workflow_dispatch:
+permissions: {contents: read, pages: write, id-token: write}
+concurrency: {group: poll, cancel-in-progress: false}
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: {name: github-pages, url: '${{ steps.deploy.outputs.page_url }}'}
+    steps:
+      - uses: actions/checkout@v4
+      - id: pages
+        uses: actions/configure-pages@v5
+      - name: Restore state from the live site (no disk between runs)
+        run: |
+          mkdir -p data
+          SITE='${{ steps.pages.outputs.base_url }}'
+          for n in models rankings apps endpoints; do curl -sfo data/$n.json "$SITE/raw/$n.json" || true; done
+          curl -sfo public/dashboard.json "$SITE/dashboard.json" || true
+          curl -sfo public/traces.jsonl "$SITE/traces.jsonl" || true
+      - name: Poll OpenRouter
+        env: {OPENROUTER_API_KEY: '${{ secrets.OPENROUTER_API_KEY }}'}
+        run: python3 app.py --once
+      - name: Publish raw state for the next run
+        run: mkdir -p public/raw && cp data/*.json public/raw/
+      - uses: actions/upload-artifact@v4
+        with: {name: 'snapshot-${{ github.run_id }}', path: data/snapshots/, retention-days: 90, if-no-files-found: ignore}
+      - uses: actions/upload-pages-artifact@v3
+        with: {path: public}
+      - id: deploy
+        uses: actions/deploy-pages@v4
